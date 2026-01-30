@@ -44,13 +44,6 @@ pd.set_option('compute.use_numba', True)
 config.enable_flash_attention()
 set_global_policy(Policy('mixed_float16'))
     
-
-def create_windows(data, wl):
-    print('\nGenerating sliding windows')
-    windows = np.array([data[i:i + wl] for i in range(len(data) - wl)], dtype=np.int8)
-    # np.random.shuffle(windows)
-    return windows
-    
    
 # LSTM Transformer network
 def lstm_basic(inputs, ff_dim, dropout, i):
@@ -66,7 +59,7 @@ def lstm_basic(inputs, ff_dim, dropout, i):
     return layers.Add(name=f'lout_add{i}')([x,res])
     
     
-def make_lstm_model(input_shape, dropout, num_classes, dims, num_layers):
+def make_lstm_model(input_shape, dropout, dims, num_layers):
     # fencoder = FNetEncoder(dims, dropout=dropout, activation=activation)
     inputs = layers.Input(input_shape)
     x = norm(inputs)
@@ -80,7 +73,7 @@ def make_lstm_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(1, activation='linear')(x)
+    outputs = layers.Dense(10)(x)
     return models.Model(inputs, outputs)    
     
     
@@ -112,7 +105,7 @@ def make_cnn_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(1, activation='linear')(x)
+    outputs = layers.Dense(10)(x)
     return models.Model(inputs, outputs)
     
     
@@ -157,7 +150,7 @@ def add_lag_features(data, column_name):
     Returns:
         pd.DataFrame: DataFrame with an additional column for lags since last occurrence.
     """
-    print(f'\nAdding lag-based features to count the number of lags since each value last appeared.')
+    # print(f'\nAdding lag-based features to count the number of lags since each value last appeared.')
     # Initialize a dictionary to track the last seen index for each unique value
     unique_values = data[column_name].unique()
     last_seen = {val: -1 for val in unique_values}  # -1 indicates not seen yet
@@ -172,11 +165,39 @@ def add_lag_features(data, column_name):
     return data    
 
 
+def rolling_count_fixed_window(data, column_name):
+    """
+    Calculates rolling count of value occurrences within a fixed window size.
+    Parameters:
+        data (pd.DataFrame): Input DataFrame with one column of integers.
+        column_name (str): Name of the column containing values.
+        window_size (int): Size of the rolling window.
+    Returns:
+        pd.DataFrame: DataFrame with the rolling count feature added.
+    """
+    # print(f'\nCalculating rolling count of value occurrences within a fixed window size...')
+    rolling_counts = np.zeros(len(data), dtype=np.int8)  # Ensure dtype is int8
+    value_positions = {val: [] for val in data[column_name].unique()}  # Track positions
+    for i in range(len(data)):
+        value = data[column_name][i]
+        # Add current index to the tracking list for the current value
+        value_positions[value].append(i)
+        # Remove indices outside the fixed window
+        # while value_positions[value] and value_positions[value][0] < i - window_size + 1:
+        #     value_positions[value].pop(0)
+        # Count the number of occurrences within the fixed window
+        rolling_counts[i] = len(value_positions[value])
+    # Add the feature to the DataFrame
+    data[f'{column_name}_rolling_count'] = rolling_counts
+    return data
+
+
 def distance_to_next(data, column_name):
     """
     Calculate the distance (in rows) to the next occurrence of the same value.
     """
-    print(f'\nCalculating the distance (in rows) to the next occurrence of the same value....')
+    data = data.reset_index(drop=True)
+    # print(f'\nCalculating the distance (in rows) to the next occurrence of the same value....')
     next_seen = {}
     distance = [0] * len(data)
     for i in range(len(data) - 1, -1, -1):
@@ -187,31 +208,16 @@ def distance_to_next(data, column_name):
     return data
 
 
-def rolling_count_fixed_window(data, column_name, window_size):
-    """
-    Calculates rolling count of value occurrences within a fixed window size.
-    Parameters:
-        data (pd.DataFrame): Input DataFrame with one column of integers.
-        column_name (str): Name of the column containing values.
-        window_size (int): Size of the rolling window.
-    Returns:
-        pd.DataFrame: DataFrame with the rolling count feature added.
-    """
-    print(f'\nCalculating rolling count of value occurrences within a fixed window size...')
-    rolling_counts = np.zeros(len(data), dtype=np.int8)  # Ensure dtype is int8
-    value_positions = {val: [] for val in data[column_name].unique()}  # Track positions
-    for i in range(len(data)):
-        value = data[column_name][i]
-        # Add current index to the tracking list for the current value
-        value_positions[value].append(i)
-        # Remove indices outside the fixed window
-        while value_positions[value] and value_positions[value][0] < i - window_size + 1:
-            value_positions[value].pop(0)
-        # Count the number of occurrences within the fixed window
-        rolling_counts[i] = len(value_positions[value])
-    # Add the feature to the DataFrame
-    data[f'{column_name}_rolling_count_{window_size}'] = rolling_counts
-    return data
+def create_windows(data, wl):
+    print('\nGenerating sliding windows')
+    windows = np.empty([len(data) - wl, wl, 4], dtype=np.int8)
+    for i in range(len(data)-wl):
+        new_data = data[i:i+wl]
+        new_data = distance_to_next(new_data, '0')
+        new_data = rolling_count_fixed_window(new_data, '0')
+        new_data = add_lag_features(new_data, '0')
+        windows[i] = new_data.values
+    return windows    
 
 
 def analyze_misclassifications(model, X, y_true, class_names=None):
@@ -275,6 +281,7 @@ def evaluate_test_set(model, X_test, y_test, class_names=None):
     # plt.ylabel("True")
     # plt.show()
 
+
 if __name__ == '__main__':
     # Parameters
     lotto = 'C4L'
@@ -284,11 +291,11 @@ if __name__ == '__main__':
     num_layers = 2
     activation = 'relu'
     
-    batch_size = 32
+    batch_size = 16
     lr = 5e-4
-    early_pat = 15
-    reduc_pat = 3
-    reduc_fac = 0.5
+    early_pat = 5
+    reduc_pat = 2
+    reduc_fac = 0.9
 
     # Target dataset
     target_df = pd.read_csv(f'datasets/{lotto}_Full.csv')
@@ -312,7 +319,7 @@ if __name__ == '__main__':
     # Flatten down to individual digits
     print('\nFlattening down to individual digits')
     quick_df = np.array([int(digit) for number in quick_df for digit in str(number)], dtype=np.int8)
-    quick_df = quick_df[int(len(quick_df)*0.95):int(len(quick_df)*0.97)]
+    quick_df = quick_df[int(len(quick_df)*0.95):int(len(quick_df)*0.953)]
 
     full_data = quick_df  #np.concatenate((quick_df, target_df))
     len_target = len(target_df)
@@ -333,28 +340,18 @@ if __name__ == '__main__':
         # Creating new features
         print('\nCreating new features')
         col = '0' # Column to use for feature calculations
-        # data = add_lag_features(data, col)
-        data = distance_to_next(data, col)
-        # data = rolling_count_fixed_window(data, col, wl)
         
         # Splitting X and y values
         target = data['targets'].values
-        data = data.drop(columns=['targets']).values
+        data = data.drop(columns=['targets'])
         
         print(f'\nTarget Data Length: {len_target}\tQuick Data Length: {len_quick}')
         
-        # Map classes to sequential range
-        unique_classes = np.unique(target)
-        num_classes = len(unique_classes)
-        
-        # print(f'\nClasses detected: {unique_classes}\n')
-        
         windows = create_windows(data, wl)
-        del data
         
         enc_in = windows[1:]
         dec_out = target[wl:-1]
-        
+
         # print(f'\nenc_in:\n{enc_in[-3:]}')
         # print(f'\ndec_out:\n{dec_out[-3:]}\n')
         
@@ -372,10 +369,13 @@ if __name__ == '__main__':
         
         input_shape = (encoder_input.shape[1],encoder_input.shape[2])
         
-        model = make_lstm_model(input_shape, dropout, num_classes, dims, num_layers)
-        model_name = f'lstm_mha_t{t}_WL{wl}_digits_lin_v1'
+        model = make_lstm_model(input_shape, dropout, dims, num_layers)
+        model_name = f'lstm_mha_t{t}_WL{wl}_digits_lin_v2'
         model_weights = f'model_weights/{model_name}.weights.h5'
-        model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss='huber', metrics=['mae'], jit_compile=True)
+
+        # model.load_weights(model_weights)
+        
+        model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss=losses.SparseCategoricalCrossentropy(use_logits=True), metrics=['accuracy'], jit_compile=True)
         model.summary()
         
         callback = [callbacks.EarlyStopping(monitor='val_mae', min_delta=0,
@@ -399,7 +399,7 @@ if __name__ == '__main__':
         model.save(f'models/{model_name}.keras', overwrite=True)
         model.save_weights(model_weights, overwrite=True)
         
-        val_loss, val_mae = model.evaluate(enc_in_val, dec_out_val)
+        val_loss, val_mae, _ = model.evaluate(enc_in_val, dec_out_val)
         print(f'\nVal Loss: {val_loss:.4f}\tVal MAE: {val_mae:.4f}\n')
         
         # nums = 500
