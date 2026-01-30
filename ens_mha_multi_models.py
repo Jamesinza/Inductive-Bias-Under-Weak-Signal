@@ -80,7 +80,7 @@ def make_lstm_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(num_classes, activation='softmax')(x)
+    outputs = layers.Dense(1, activation='linear')(x)
     return models.Model(inputs, outputs)    
     
     
@@ -112,7 +112,7 @@ def make_cnn_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(num_classes, activation='softmax')(x)
+    outputs = layers.Dense(1, activation='linear')(x)
     return models.Model(inputs, outputs)
     
     
@@ -144,7 +144,7 @@ def make_gru_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(num_classes, activation='softmax')(x)
+    outputs = layers.Dense(1, activation='linear')(x)
     return models.Model(inputs, outputs)     
     
 
@@ -284,7 +284,7 @@ if __name__ == '__main__':
     num_layers = 2
     activation = 'relu'
     
-    batch_size = 16
+    batch_size = 32
     lr = 5e-4
     early_pat = 15
     reduc_pat = 3
@@ -312,7 +312,7 @@ if __name__ == '__main__':
     # Flatten down to individual digits
     print('\nFlattening down to individual digits')
     quick_df = np.array([int(digit) for number in quick_df for digit in str(number)], dtype=np.int8)
-    quick_df = quick_df[int(len(quick_df)*0.97):int(len(quick_df)*0.98)]
+    quick_df = quick_df[int(len(quick_df)*0.95):int(len(quick_df)*0.97)]
 
     full_data = quick_df  #np.concatenate((quick_df, target_df))
     len_target = len(target_df)
@@ -372,13 +372,13 @@ if __name__ == '__main__':
         
         input_shape = (encoder_input.shape[1],encoder_input.shape[2])
         
-        model = make_cnn_model(input_shape, dropout, num_classes, dims, num_layers)
-        model_name = f'cnn_mha_t{t}_WL{wl}_digits_v1'
+        model = make_lstm_model(input_shape, dropout, num_classes, dims, num_layers)
+        model_name = f'lstm_mha_t{t}_WL{wl}_digits_lin_v1'
         model_weights = f'model_weights/{model_name}.weights.h5'
-        model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss='sparse_categorical_crossentropy', metrics=['accuracy'], jit_compile=True)
+        model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss='huber', metrics=['mae'], jit_compile=True)
         model.summary()
         
-        callback = [callbacks.EarlyStopping(monitor='val_accuracy', min_delta=0,
+        callback = [callbacks.EarlyStopping(monitor='val_mae', min_delta=0,
                                             patience=early_pat, verbose=1, mode='auto',
                                             baseline=None, restore_best_weights=True,
                                             start_from_epoch=0),
@@ -386,37 +386,37 @@ if __name__ == '__main__':
                                                patience=reduc_pat, verbose=0, mode='auto',
                                                min_delta=0.0, cooldown=0, min_lr=0),
                     callbacks.ModelCheckpoint(f'checkpoint_models/{model_name}.keras',
-                                              monitor = 'val_accuracy', save_best_only=True)
+                                              monitor = 'val_mae', save_best_only=True)
                    ]
         
         # Training the model
-        class_weights = compute_class_weight('balanced', classes=unique_classes, y=decoder_output)
-        class_weights_dict = dict(enumerate(class_weights))
+        #class_weights = compute_class_weight('balanced', classes=unique_classes, y=decoder_output)
+        #class_weights_dict = dict(enumerate(class_weights))
         
         lstm_history = model.fit(encoder_input, decoder_output, batch_size=batch_size, epochs=100, verbose=1,
-                           validation_data=(enc_in_test, dec_out_test), callbacks=callback, class_weight=class_weights_dict)
+                           validation_data=(enc_in_test, dec_out_test), callbacks=callback,) # class_weight=class_weights_dict)
         
         model.save(f'models/{model_name}.keras', overwrite=True)
         model.save_weights(model_weights, overwrite=True)
         
         val_loss, val_mae = model.evaluate(enc_in_val, dec_out_val)
-        print(f'\nVal Loss: {val_loss:.4f}\tVal ACCURACY: {val_mae:.4f}\n')
+        print(f'\nVal Loss: {val_loss:.4f}\tVal MAE: {val_mae:.4f}\n')
         
         # nums = 500
-        predictions = model.predict(enc_in_val)
-        preds = np.argmax(predictions, axis=1)
-        real_res = dec_out_val
-        hits = 0
-        for i, num in enumerate(preds):
-            if num==real_res[i]:
-                hits += 1
-        print(f'\nCorrect Predictions = {hits} out of {len(real_res)}')
-        print(f'\nenc_in_val:\n{enc_in_val[-3:]}')
-        print(f'\ndec_out_val:\n{dec_out_val[-3:]}\n')
+        #predictions = model.predict(enc_in_val)
+        #preds = np.argmax(predictions, axis=1)
+        #real_res = dec_out_val
+        #hits = 0
+        #for i, num in enumerate(preds):
+        #    if num==real_res[i]:
+        #        hits += 1
+        #print(f'\nCorrect Predictions = {hits} out of {len(real_res)}')
+        #print(f'\nenc_in_val:\n{enc_in_val[-3:]}')
+        #print(f'\ndec_out_val:\n{dec_out_val[-3:]}\n')
         
-        evaluate_test_set(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2','Class 3', 'Class 4', 'Class 5','Class 6', 'Class 7', 'Class 8','Class 9'])
+        #evaluate_test_set(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2','Class 3', 'Class 4', 'Class 5','Class 6', 'Class 7', 'Class 8','Class 9'])
         
-        misclassified_df = analyze_misclassifications(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7', 'Class 8', 'Class 9'])
-        print(f'\nMisClassified Classes:\n{misclassified_df.head()}')
+        #misclassified_df = analyze_misclassifications(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7', 'Class 8', 'Class 9'])
+        #print(f'\nMisClassified Classes:\n{misclassified_df.head()}')
         del windows, model
         gc.collect()
