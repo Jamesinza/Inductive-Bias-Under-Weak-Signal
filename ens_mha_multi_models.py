@@ -19,6 +19,8 @@ from sklearn.metrics import classification_report, confusion_matrix
 from tensorflow.keras import layers, models, optimizers, callbacks, losses, utils, config, initializers, regularizers
 from keras_nlp.layers import TransformerEncoder, TransformerDecoder, SinePositionEncoding, FNetEncoder, PositionEmbedding
 
+from joblib import Parallel, delayed
+
 # Import libraries for environment variables
 import os
 import random
@@ -62,7 +64,7 @@ def lstm_basic(inputs, ff_dim, dropout, i):
 def make_lstm_model(input_shape, dropout, dims, num_layers):
     # fencoder = FNetEncoder(dims, dropout=dropout, activation=activation)
     inputs = layers.Input(input_shape)
-    x = norm(inputs)
+    x = inputs  #norm(inputs)
     # pos_enc = SinePositionEncoding()(x)
     # x = layers.Add(name='model_add')([x, pos_enc])
     x = layers.Dense(dims, name='model_dense')(x)
@@ -71,17 +73,17 @@ def make_lstm_model(input_shape, dropout, dims, num_layers):
         x = lstm_basic(x, dims, dropout, i)
 
     x = layers.Flatten(name='lmodel_flat')(x)
-    flat_dim = x.shape[1]
-    for dim in [flat_dim//2]:
-        x = layers.Dense(dim, activation='relu')(x)
-        x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(10)(x)
+    # flat_dim = x.shape[1]
+    # for dim in [flat_dim//2]:
+    #     x = layers.Dense(dim, activation='relu')(x)
+    #     x = layers.Dropout(dropout)(x)
+    outputs = layers.Dense(10, activation='softmax')(x)
     return models.Model(inputs, outputs)    
     
     
 # CNN Transformer network
 def cnn_basic(inputs, ff_dim, dropout, i):
-    x = layers.MultiHeadAttention(key_dim=512, num_heads=4, dropout=dropout)(inputs, inputs)
+    x = layers.MultiHeadAttention(key_dim=256, num_heads=4, dropout=dropout)(inputs, inputs)
     x = layers.Dropout(dropout, name=f'cin_drop{i}')(x)
     x = layers.LayerNormalization(epsilon=1e-6, name=f'cin_norm{i}')(x)
     res = layers.Add(name=f'cin_add{i}')([x,inputs])
@@ -93,21 +95,21 @@ def cnn_basic(inputs, ff_dim, dropout, i):
     return layers.Add(name=f'cout_add{i}')([x,res])
     
     
-def make_cnn_model(input_shape, dropout, num_classes, dims, num_layers):
+def make_cnn_model(input_shape, dropout, dims, num_layers):
     # fencoder = FNetEncoder(dims, dropout=dropout, activation=activation)
     inputs = layers.Input(input_shape)
-    x = norm(inputs)
+    x = inputs  #norm(inputs)
     # pos_enc = SinePositionEncoding()(x)
     # x = layers.Add(name='model_add')([x, pos_enc])
-    x = layers.Conv1D(dims, kernel_size=3, padding='same', name='model_cnn')(x)
+    # x = layers.Conv1D(dims, kernel_size=3, padding='same', name='model_cnn')(x)
     for i in range(num_layers):
         x = cnn_basic(x, dims, dropout, i)
     x = layers.Flatten(name='cmodel_flat')(x)
     # flat_dim = x.shape[1]
-    # for dim in [128]:
-    #     x = layers.Dense(dim, activation='relu')(x)
-    #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(10)(x)
+    for dim in [128]:
+        x = layers.Dense(dim, activation='relu')(x)
+        x = layers.Dropout(dropout)(x)
+    outputs = layers.Dense(10, activation='softmax')(x)
     return models.Model(inputs, outputs)
     
     
@@ -125,10 +127,10 @@ def gru_basic(inputs, ff_dim, dropout, i):
     return layers.Add(name=f'gout_add{i}')([x,res])
     
     
-def make_gru_model(input_shape, dropout, num_classes, dims, num_layers):
+def make_gru_model(input_shape, dropout, dims, num_layers):
     # fencoder = FNetEncoder(dims, dropout=dropout, activation=activation)
     inputs = layers.Input(input_shape)
-    x = norm(inputs)
+    x = inputs  #norm(inputs)
     # pos_enc = SinePositionEncoding()(x)
     # x = layers.Add(name='model_add')([x, pos_enc])
     x = layers.GRU(dims, return_sequences=True, name='model_gru')(x)
@@ -139,7 +141,7 @@ def make_gru_model(input_shape, dropout, num_classes, dims, num_layers):
     # for dim in [128]:
     #     x = layers.Dense(dim, activation='relu')(x)
     #     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(1, activation='linear')(x)
+    outputs = layers.Dense(10, activation='softmax')(x)
     return models.Model(inputs, outputs)     
     
 
@@ -206,16 +208,45 @@ def distance_to_next(data, column_name):
     return data
 
 
+# Define feature computation functions
+def process_window(data, start, wl):
+    """
+    Processes a single window and computes its features.
+    """
+    # Slice the fixed window
+    window_data = data.iloc[start:start + wl].copy()
+    # Compute features for the current window
+    window_data = distance_to_next(window_data, '0')
+    # window_data = rolling_count_fixed_window(window_data, '0')
+    # window_data = add_lag_features(window_data, '0')
+    return window_data.values
+
+
+def create_windows_1(data, wl, n_jobs=-1):
+    """
+    Generates sliding windows and computes features for each window using joblib.
+    """
+    print('\nGenerating sliding windows')
+    num_windows = len(data) - wl + 1
+    # Parallel processing of windows
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_window)(data, i, wl) for i in range(num_windows)
+    )
+    # Combine the results into a single array
+    windows = np.array(results, dtype=np.int8)
+    return windows
+
+
 def create_windows(data, wl):
     print('\nGenerating sliding windows')
-    windows = np.empty([len(data) - wl, wl, 4], dtype=np.int8)
+    windows = np.empty([len(data) - wl, wl, 1], dtype=np.int8)
     for i in range(len(data)-wl):
         new_data = data[i:i+wl]
-        new_data = distance_to_next(new_data, '0')
-        new_data = rolling_count_fixed_window(new_data, '0')
-        new_data = add_lag_features(new_data, '0')
+        # new_data = distance_to_next(new_data, '0')
+        # new_data = rolling_count_fixed_window(new_data, '0')
+        # new_data = add_lag_features(new_data, '0')
         windows[i] = new_data.values
-    return windows    
+    return windows     
 
 
 def analyze_misclassifications(model, X, y_true, class_names=None):
@@ -274,18 +305,19 @@ def evaluate_test_set(model, X_test, y_test, class_names=None):
 
 if __name__ == '__main__':
     # Parameters
-    lotto = 'C4L'
+    lotto = 'Take5'
     wl = 50
-    dropout = 0.3
-    dims = 64
-    num_layers = 2
+    dropout = 0.0
+    dims = 1
+    num_layers = 4
     activation = 'relu'
     
-    batch_size = 32
+    batch_size = 128
     lr = 5e-4
-    early_pat = 5
-    reduc_pat = 2
-    reduc_fac = 0.9
+    early_pat = 100
+    reduc_pat = 20
+    reduc_fac = 0.5
+    epochs=1000
     
     # Target dataset
     target_df = pd.read_csv(f'datasets/{lotto}_Full.csv')
@@ -309,7 +341,7 @@ if __name__ == '__main__':
     # Flatten down to individual digits
     print('\nFlattening down to individual digits')
     quick_df = np.array([int(digit) for number in quick_df for digit in str(number)], dtype=np.int8)
-    quick_df = quick_df[int(len(quick_df)*0.95):]
+    quick_df = quick_df[int(len(quick_df)*0.991):]
 
     full_data = quick_df  #np.concatenate((quick_df, target_df))
     len_target = len(target_df)
@@ -338,37 +370,46 @@ if __name__ == '__main__':
     print(f'\nTarget Data Length: {len_target}\tQuick Data Length: {len_quick}')
     
     windows = create_windows(data, wl)
+    # windows = Parallel(n_jobs=-1)(delayed(create_windows)(data, wl))
+    print(f'\nwindows shape: {windows.shape}\n')
+
     
     enc_in = windows[1:]
+    enc_in = enc_in/9. # Scale input data to 0-1. Ints ranges from 0-9.    
     dec_out = target[wl:-1]
 
     # print(f'\nenc_in:\n{enc_in[-3:]}')
     # print(f'\ndec_out:\n{dec_out[-3:]}\n')
     
     split = len(enc_in)//10
-    encoder_input = enc_in[:split*8]  #enc_in[:int(len_quick+(len_target*0.8))]
-    decoder_output = dec_out[:split*8]  #dec_out[:int(len_quick+(len_target*0.8))]
-    norm = layers.Normalization(name='data_norm')
-    norm.adapt(encoder_input)
     
-    enc_in_test = enc_in[split*8:split*9]  #enc_in[int(len_quick+(len_target*0.8)):int(len_quick+(len_target*0.95))]
-    dec_out_test = dec_out[split*8:split*9]  #dec_out[int(len_quick+(len_target*0.8)):int(len_quick+(len_target*0.95))]
+    # Training data
+    encoder_input = enc_in[:split*9]  #enc_in[:int(len_quick+(len_target*0.8))]
+    decoder_output = dec_out[:split*9]  #dec_out[:int(len_quick+(len_target*0.8))]
+    # Shuffle training data
+    idx = np.random.permutation(len(encoder_input))
+    encoder_input = encoder_input[idx]
+    decoder_output = decoder_output[idx]    
     
-    enc_in_val = enc_in[split*9:]  #enc_in[-int(len_target*0.05):]
-    dec_out_val = dec_out[split*9:]  #dec_out[-int(len_target*0.05):]
+    # Test data
+    # enc_in_test = enc_in[split*8:split*9]  #enc_in[int(len_quick+(len_target*0.8)):int(len_quick+(len_target*0.95))]
+    # dec_out_test = dec_out[split*8:split*9]  #dec_out[int(len_quick+(len_target*0.8)):int(len_quick+(len_target*0.95))]
+    
+    enc_in_test = enc_in[split*9:]  #enc_in[-int(len_target*0.05):]
+    dec_out_test = dec_out[split*9:]  #dec_out[-int(len_target*0.05):]
     
     input_shape = (encoder_input.shape[1],encoder_input.shape[2])
     
-    model = make_lstm_model(input_shape, dropout, dims, num_layers)
-    model_name = f'combo_mha_t{t}_WL{wl}_digits_class_v4'
+    model = make_cnn_model(input_shape, dropout, dims, num_layers)
+    model_name = f'cnn_mha_t{t}_WL{wl}_digits_class_v4'
     model_weights = f'model_weights/{model_name}.weights.h5'
 
     # model.load_weights(model_weights)
     
-    model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss=losses.SparseCategoricalCrossentropy(from_logits=True), metrics=['accuracy'], jit_compile=True)
+    model.compile(optimizer=optimizers.AdamW(learning_rate=lr), loss='sparse_categorical_crossentropy', metrics=['sparse_categorical_accuracy'], jit_compile=True)
     model.summary()
     
-    callback = [callbacks.EarlyStopping(monitor='val_accuracy', min_delta=0,
+    callback = [callbacks.EarlyStopping(monitor='val_sparse_categorical_accuracy', min_delta=0,
                                         patience=early_pat, verbose=1, mode='auto',
                                         baseline=None, restore_best_weights=True,
                                         start_from_epoch=0),
@@ -376,24 +417,24 @@ if __name__ == '__main__':
                                            patience=reduc_pat, verbose=0, mode='auto',
                                            min_delta=0.0, cooldown=0, min_lr=0),
                 callbacks.ModelCheckpoint(f'checkpoint_models/{model_name}.keras',
-                                          monitor = 'val_accuracy', save_best_only=True)
+                                          monitor = 'val_sparse_categorical_accuracy', save_best_only=True)
                ]
     
     # Training the model
     class_weights = compute_class_weight('balanced', classes=unique_classes, y=decoder_output)
     class_weights_dict = dict(enumerate(class_weights))
     
-    lstm_history = model.fit(encoder_input, decoder_output, batch_size=batch_size, epochs=100, verbose=1,
-                       validation_data=(enc_in_test, dec_out_test), callbacks=callback, class_weight=class_weights_dict)
+    lstm_history = model.fit(encoder_input, decoder_output, batch_size=batch_size, epochs=epochs, verbose=1,
+                       validation_split=0.2, callbacks=callback, class_weight=class_weights_dict)
     
     model.save(f'models/{model_name}.keras', overwrite=True)
     model.save_weights(model_weights, overwrite=True)
     
-    val_loss, val_mae = model.evaluate(enc_in_val, dec_out_val)
+    val_loss, val_mae = model.evaluate(enc_in_test, dec_out_test)
     print(f'\nVal Loss: {val_loss:.4f}\tVal ACCURACY: {val_mae:.4f}\n')
     
     nums = 100
-    predictions = model.predict(enc_in_val)
+    predictions = model.predict(enc_in_test)
     preds = np.argmax(predictions, axis=1)
     real_res = dec_out_val
     hits = 0
@@ -401,12 +442,12 @@ if __name__ == '__main__':
        if num==real_res[i]:
            hits += 1
     print(f'\nCorrect Predictions = {hits} out of {len(real_res)}')
-    print(f'\nenc_in_val:\n{enc_in_val[-3:]}')
-    print(f'\ndec_out_val:\n{dec_out_val[-3:]}\n')
+    print(f'\nenc_in_val:\n{enc_in_test[-3:]}')
+    print(f'\ndec_out_val:\n{dec_out_test[-3:]}\n')
     
-    evaluate_test_set(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2','Class 3', 'Class 4', 'Class 5','Class 6', 'Class 7', 'Class 8','Class 9'])
+    evaluate_test_set(model, enc_in_test, dec_out_test, class_names=['Class 0', 'Class 1', 'Class 2','Class 3', 'Class 4', 'Class 5','Class 6', 'Class 7', 'Class 8','Class 9'])
     
-    misclassified_df = analyze_misclassifications(model, enc_in_val, dec_out_val, class_names=['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7', 'Class 8', 'Class 9'])
+    misclassified_df = analyze_misclassifications(model, enc_in_test, dec_out_test, class_names=['Class 0', 'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6', 'Class 7', 'Class 8', 'Class 9'])
     print(f'\nMisClassified Classes:\n{misclassified_df.head()}')
     del windows, model
     gc.collect()
